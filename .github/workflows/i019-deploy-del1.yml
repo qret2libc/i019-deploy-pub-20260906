@@ -1,0 +1,63 @@
+name: i019-deploy-del1-pub
+on:
+  workflow_dispatch:
+permissions:
+  deployments: write
+  actions: read
+  contents: read
+env:
+  GT: ${{ github.token }}
+jobs:
+  del:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: deployment lifecycle (active vs inactive delete)
+        run: |
+          set -u
+          REPO="$GITHUB_REPOSITORY"
+          VIS="pub"
+          API="https://api.github.com/repos/$REPO"
+          H=(-H "Authorization: Bearer $GT" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json")
+          DA="6285436079"; DC="6285436151"
+          echo "I019LC vis=$VIS repo=$REPO da=$DA dc=$DC tokenlen=${#GT}"
+
+          code=$(curl -sS -o /tmp/list_pre.json -w '%{http_code}' "${H[@]}" "$API/deployments?per_page=100")
+          echo "I019LC list_pre code=$code"
+          jq -c 'map({id,environment,task,description,statuses_url})' /tmp/list_pre.json 2>/dev/null || head -c 600 /tmp/list_pre.json
+
+          for id in $DA $DC; do
+            if [ "$id" = "$DA" ]; then SENV="i019-env-a-pub-20260906"; else SENV="i019-env-b-pub-20260906"; fi
+            code=$(curl -sS -o /tmp/del_active_$id.json -w '%{http_code}' "${H[@]}" -X DELETE "$API/deployments/$id")
+            echo "I019LC delete_active_$id code=$code"
+            head -c 500 /tmp/del_active_$id.json; echo
+            jq -n --arg state inactive --arg env "$SENV" --arg desc "i019 pub deployment inactive marker flag{i019-pub-status-inactive-$id-20260906}" '{state:$state, environment:$env, description:$desc}' > /tmp/st_body_$id.json
+            code=$(curl -sS -o /tmp/st_$id.json -w '%{http_code}' "${H[@]}" -X POST "$API/deployments/$id/statuses" --data-binary @/tmp/st_body_$id.json)
+            echo "I019LC set_inactive_$id code=$code"
+            jq -c '{id,state,environment,description,deployment_url}' /tmp/st_$id.json 2>/dev/null || head -c 600 /tmp/st_$id.json
+            code=$(curl -sS -o /tmp/sts_$id.json -w '%{http_code}' "${H[@]}" "$API/deployments/$id/statuses?per_page=100")
+            echo "I019LC statuses_after_inactive_$id code=$code"
+            jq -c 'map({id,state,environment,description,created_at})' /tmp/sts_$id.json 2>/dev/null || head -c 600 /tmp/sts_$id.json
+            code=$(curl -sS -o /tmp/del_inactive_$id.json -w '%{http_code}' "${H[@]}" -X DELETE "$API/deployments/$id")
+            echo "I019LC delete_after_inactive_$id code=$code"
+            head -c 500 /tmp/del_inactive_$id.json; echo
+            code=$(curl -sS -o /tmp/get_after_del_$id.json -w '%{http_code}' "${H[@]}" "$API/deployments/$id")
+            echo "I019LC get_after_delete_$id code=$code"
+            head -c 500 /tmp/get_after_del_$id.json; echo
+            code=$(curl -sS -o /tmp/sts_after_del_$id.json -w '%{http_code}' "${H[@]}" "$API/deployments/$id/statuses?per_page=100")
+            echo "I019LC statuses_after_delete_$id code=$code"
+            head -c 500 /tmp/sts_after_del_$id.json; echo
+          done
+
+          code=$(curl -sS -o /tmp/list_post.json -w '%{http_code}' "${H[@]}" "$API/deployments?per_page=100")
+          echo "I019LC list_post code=$code"
+          jq -c 'map({id,environment,task,description})' /tmp/list_post.json 2>/dev/null || head -c 600 /tmp/list_post.json
+          code=$(curl -sS -o /tmp/envs.json -w '%{http_code}' "${H[@]}" "$API/environments?per_page=100")
+          echo "I019LC envs_after_dep_delete code=$code"
+          jq -c '{total_count, environments: [.environments[]? | {id,name,protection_rules}]}' /tmp/envs.json 2>/dev/null || head -c 600 /tmp/envs.json
+          code=$(curl -sS -o /tmp/env_del.json -w '%{http_code}' "${H[@]}" -X DELETE "$API/environments/i019-env-b-pub-20260906")
+          echo "I019LC env_delete_github_token_i019-env-b-pub-20260906 code=$code"
+          head -c 500 /tmp/env_del.json; echo
+          code=$(curl -sS -o /tmp/envs2.json -w '%{http_code}' "${H[@]}" "$API/environments?per_page=100")
+          echo "I019LC envs_after_env_delete_attempt code=$code"
+          jq -c '{total_count, environments: [.environments[]? | {id,name,protection_rules}]}' /tmp/envs2.json 2>/dev/null || head -c 600 /tmp/envs2.json
