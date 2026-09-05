@@ -1,0 +1,96 @@
+name: i019-deploy-create-pub
+on:
+  workflow_dispatch:
+permissions:
+  deployments: write
+  actions: read
+  contents: read
+env:
+  GT: ${{ github.token }}
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: create deployments and deployment statuses
+        run: |
+          set -u
+          REPO="$GITHUB_REPOSITORY"
+          VIS="pub"
+          SHA="$GITHUB_SHA"
+          API="https://api.github.com/repos/$REPO"
+          H=(-H "Authorization: Bearer $GT" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json")
+          echo "I019META repo=$REPO vis=$VIS sha=$SHA tokenlen=${#GT}"
+
+          mkdep() {
+            envn="$1"; task="$2"; desc="$3"; marker="$4"; out="$5"
+            jq -n --arg ref main --arg env "$envn" --arg task "$task" --arg desc "$desc" --arg probe "$marker" \
+              '{ref:$ref, task:$task, auto_merge:false, required_contexts:[], payload:{probe:$probe}, environment:$env, description:$desc}' > /tmp/dep_body.json
+            code=$(curl -sS -o "$out" -w '%{http_code}' "${H[@]}" -X POST "$API/deployments" --data-binary @/tmp/dep_body.json)
+            echo "I019DEP create env=$envn task=$task code=$code out=$out"
+            jq -c '{id,url,environment,original_environment,task,description,sha,ref,statuses_url,transient_environment,production_environment,creator:.creator.login,created_at,updated_at}' "$out" 2>/dev/null || head -c 800 "$out"
+          }
+
+          # D1: env A, pending only (will become inactive when D2 succeeds)
+          mkdep "i019-env-a-pub-20260906" "deploy:i019-pub-a-20260906" "i019 pub deployment A flag{i019-pub-deploy-a-20260906}" "flag{i019-pub-deploy-a-20260906}" /tmp/dep_a.json
+          # D2: env A, pending then success (auto-inactivates D1)
+          mkdep "i019-env-a-pub-20260906" "deploy:i019-pub-b-20260906" "i019 pub deployment B flag{i019-pub-deploy-b-20260906}" "flag{i019-pub-deploy-b-20260906}" /tmp/dep_b.json
+          # D3: env B, pending only (stays active until lifecycle phase)
+          mkdep "i019-env-b-pub-20260906" "deploy:i019-pub-c-20260906" "i019 pub deployment C flag{i019-pub-deploy-c-20260906}" "flag{i019-pub-deploy-c-20260906}" /tmp/dep_c.json
+
+          mkstatus() {
+            dep="$1"; state="$2"; envn="$3"; desc="$4"; logurl="$5"; envurl="$6"; turl="$7"; out="$8"
+            jq -n --arg state "$state" --arg env "$envn" --arg desc "$desc" --arg log "$logurl" --arg eurl "$envurl" --arg turl "$turl" \
+              '{state:$state, description:$desc, environment:$env, log_url:$log, environment_url:$eurl, target_url:$turl, auto_inactive:true}' > /tmp/st_body.json
+            code=$(curl -sS -o "$out" -w '%{http_code}' "${H[@]}" -X POST "$API/deployments/$dep/statuses" --data-binary @/tmp/st_body.json)
+            echo "I019STAT dep=$dep state=$state code=$code out=$out"
+            jq -c '{id,url,state,environment,description,log_url,environment_url,target_url,creator:.creator.login,deployment_url,created_at,updated_at}' "$out" 2>/dev/null || head -c 800 "$out"
+          }
+
+          DA=$(jq -r '.id // empty' /tmp/dep_a.json)
+          DB=$(jq -r '.id // empty' /tmp/dep_b.json)
+          DC=$(jq -r '.id // empty' /tmp/dep_c.json)
+          echo "I019IDS da=$DA db=$DB dc=$DC"
+
+          if [ -n "$DA" ]; then
+            mkstatus "$DA" "pending" "i019-env-a-pub-20260906" "i019 pub D1 pending marker flag{i019-pub-status-pending-d1-20260906}" "https://logs.i019.example/probe/pub/d1/20260906" "https://i019.example/env-a-pub-20260906" "https://logs.i019.example/legacy/pub/d1/20260906" /tmp/st_a1.json
+          fi
+          if [ -n "$DB" ]; then
+            mkstatus "$DB" "pending" "i019-env-a-pub-20260906" "i019 pub D2 pending marker flag{i019-pub-status-pending-d2-20260906}" "https://logs.i019.example/probe/pub/d2/20260906" "https://i019.example/env-a-pub-20260906" "https://logs.i019.example/legacy/pub/d2/20260906" /tmp/st_b1.json
+            mkstatus "$DB" "success" "i019-env-a-pub-20260906" "i019 pub D2 success marker flag{i019-pub-status-success-d2-20260906}" "https://logs.i019.example/probe/pub/d2-success/20260906" "https://i019.example/env-a-pub-20260906" "https://logs.i019.example/legacy/pub/d2/20260906" /tmp/st_b2.json
+          fi
+          if [ -n "$DC" ]; then
+            mkstatus "$DC" "pending" "i019-env-b-pub-20260906" "i019 pub D3 pending marker flag{i019-pub-status-pending-d3-20260906}" "https://logs.i019.example/probe/pub/d3/20260906" "https://i019.example/env-b-pub-20260906" "https://logs.i019.example/legacy/pub/d3/20260906" /tmp/st_c1.json
+          fi
+
+          echo "=====I019_OWNER_VIEW_START====="
+          code=$(curl -sS -o /tmp/list.json -w '%{http_code}' "${H[@]}" "$API/deployments?per_page=100")
+          echo "I019OWNER deployments_list code=$code"
+          jq -c 'map({id,environment,original_environment,task,description,sha,ref,creator:.creator.login,statuses_url,transient_environment,production_environment,created_at})' /tmp/list.json 2>/dev/null || head -c 800 /tmp/list.json
+          for id in $DA $DB $DC; do
+            if [ -n "$id" ]; then
+              code=$(curl -sS -o /tmp/dep_$id.json -w '%{http_code}' "${H[@]}" "$API/deployments/$id")
+              echo "I019OWNER deployment_by_id $id code=$code"
+              jq -c '{id,url,environment,original_environment,task,description,payload,sha,ref,statuses_url,creator:.creator.login,created_at,updated_at,transient_environment,production_environment}' /tmp/dep_$id.json 2>/dev/null || head -c 800 /tmp/dep_$id.json
+              code=$(curl -sS -o /tmp/st_$id.json -w '%{http_code}' "${H[@]}" "$API/deployments/$id/statuses?per_page=100")
+              echo "I019OWNER statuses $id code=$code"
+              jq -c 'map({id,url,state,environment,description,log_url,environment_url,target_url,creator:.creator.login,deployment_url,created_at,updated_at})' /tmp/st_$id.json 2>/dev/null || head -c 800 /tmp/st_$id.json
+            fi
+          done
+          code=$(curl -sS -o /tmp/envs.json -w '%{http_code}' "${H[@]}" "$API/environments?per_page=100")
+          echo "I019OWNER environments_list code=$code"
+          jq -c '{total_count, environments: [.environments[] | {id,name,url,html_url,created_at,updated_at,protection_rules,deployment_branch_policy}]}' /tmp/envs.json 2>/dev/null || head -c 800 /tmp/envs.json
+          for envn in "i019-env-a-pub-20260906" "i019-env-b-pub-20260906"; do
+            enc=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$envn")
+            code=$(curl -sS -o /tmp/env_one.json -w '%{http_code}' "${H[@]}" "$API/environments/$enc")
+            echo "I019OWNER environment_one $envn code=$code"
+            jq -c '{id,name,url,html_url,created_at,updated_at,protection_rules,deployment_branch_policy}' /tmp/env_one.json 2>/dev/null || head -c 800 /tmp/env_one.json
+            code=$(curl -sS -o /tmp/env_bp.json -w '%{http_code}' "${H[@]}" "$API/environments/$enc/deployment-branch-policies")
+            echo "I019OWNER env_branch_policies $envn code=$code"
+            jq -c . /tmp/env_bp.json 2>/dev/null || head -c 800 /tmp/env_bp.json
+          done
+          # try to create/update the environment object with protection via GITHUB_TOKEN (administration write boundary)
+          code=$(curl -sS -o /tmp/env_put.json -w '%{http_code}' "${H[@]}" -X PUT "$API/environments/i019-env-a-pub-20260906" -d '{"wait_timer":0,"deployment_branch_policy":null}')
+          echo "I019OWNER env_put_by_github_token code=$code"
+          head -c 800 /tmp/env_put.json; echo
+          echo "=====I019_OWNER_VIEW_END====="
