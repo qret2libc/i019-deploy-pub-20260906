@@ -1,0 +1,38 @@
+name: i019-deploy-cleanup-pub
+on:
+  workflow_dispatch:
+permissions:
+  deployments: write
+  actions: read
+  contents: read
+env:
+  GT: ${{ github.token }}
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: delete remaining deployment and verify empty state
+        run: |
+          set -u
+          REPO="$GITHUB_REPOSITORY"
+          VIS="pub"
+          API="https://api.github.com/repos/$REPO"
+          H=(-H "Authorization: Bearer $GT" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json")
+          DB="6285436114"
+          echo "I019CLN vis=$VIS repo=$REPO db=$DB tokenlen=${#GT}"
+          code=$(curl -sS -o /tmp/list_pre.json -w '%{http_code}' "${H[@]}" "$API/deployments?per_page=100")
+          echo "I019CLN list_pre code=$code"
+          jq -c 'map({id,environment,task})' /tmp/list_pre.json 2>/dev/null || head -c 500 /tmp/list_pre.json
+          code=$(curl -sS -o /tmp/del.json -w '%{http_code}' "${H[@]}" -X DELETE "$API/deployments/$DB")
+          echo "I019CLN delete_db code=$code"
+          head -c 400 /tmp/del.json; echo
+          code=$(curl -sS -o /tmp/get.json -w '%{http_code}' "${H[@]}" "$API/deployments/$DB")
+          echo "I019CLN get_db_after code=$code"
+          head -c 400 /tmp/get.json; echo
+          code=$(curl -sS -o /tmp/list_post.json -w '%{http_code}' "${H[@]}" "$API/deployments?per_page=100")
+          echo "I019CLN list_post code=$code"
+          jq -c 'map({id,environment,task})' /tmp/list_post.json 2>/dev/null || head -c 500 /tmp/list_post.json
+          code=$(curl -sS -o /tmp/envs.json -w '%{http_code}' "${H[@]}" "$API/environments?per_page=100")
+          echo "I019CLN envs code=$code"
+          jq -c '{total_count, environments: [.environments[]? | {id,name,protection_rules}]}' /tmp/envs.json 2>/dev/null || head -c 500 /tmp/envs.json
