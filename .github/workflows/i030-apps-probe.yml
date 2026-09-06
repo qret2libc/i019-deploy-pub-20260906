@@ -1,0 +1,44 @@
+name: i030-apps-install-probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  metadata: read
+env:
+  GT: ${{ github.token }}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: probe apps and installation metadata with GITHUB_TOKEN
+        run: |
+          set -u
+          echo "I030META repo=$GITHUB_REPOSITORY tokenprefix=${GT:0:4} tokenlen=${#GT} sha=$GITHUB_SHA"
+          API="https://api.github.com"
+          H=(-H "Authorization: Bearer $GT" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2026-03-10")
+          paths=(
+            "/app"
+            "/app/installations"
+            "/app/installations/999999999"
+            "/installation/repositories"
+            "/installation/token"
+            "/user/installations"
+            "/user/installations/1/repositories"
+            "/user/installations/999999999/repositories"
+            "/orgs/github/installations"
+            "/orgs/github/installation"
+            "/users/qret2libc/installation"
+            "/repos/qret2libc/i019-deploy-pub-20260906/installation"
+            "/repos/qret2libc/pridor-lifecycle-20260904/installation"
+            "/apps/renovate"
+          )
+          i=0
+          for p in "${paths[@]}"; do
+            i=$((i+1))
+            code=$(curl -sS -D "/tmp/h_$i.txt" -o "/tmp/b_$i.json" -w '%{http_code}' "${H[@]}" "$API$p")
+            echo "I030PROBE path=$p code=$code"
+            grep -iE "^(x-ratelimit-remaining|x-ratelimit-resource|x-oauth-scopes|x-accepted-oauth-scopes):" "/tmp/h_$i.txt" || true
+            head -c 1200 "/tmp/b_$i.json"; echo
+            echo "-----"
+          done
